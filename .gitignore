@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# installers / archives
+*.dmg
+*.zip
+
+# app bundles
+*.app/
+Visual Studio Code.app/
+
+
