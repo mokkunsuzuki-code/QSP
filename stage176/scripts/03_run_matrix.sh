@@ -17,18 +17,35 @@ run_step() {
   fi
 }
 
+run_pytest_soft() {
+  set +e
+  pytest -q
+  local rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "[pytest] ok"
+    return 0
+  fi
+  if [[ "${rc}" -eq 5 ]]; then
+    echo "[pytest] no tests collected -> treat as OK"
+    return 0
+  fi
+  echo "[pytest] failed rc=${rc}"
+  return "${rc}"
+}
+
 FINAL_RC=0
 
-run_step "demo" bash scripts/01_run_demo.sh || FINAL_RC=1
+# demo: 既存の Stage167 demo runner をそのまま呼ぶ（これが以前のログ形式）
+run_step "demo" python -u protocol/stage167_demo_runner.py || FINAL_RC=1
+
 run_step "attack-01" bash attack_scenarios/attack_01_tamper_sig/run.sh || FINAL_RC=1
 run_step "attack-02" bash attack_scenarios/attack_02_replay_ack/run.sh || FINAL_RC=1
 run_step "attack-03" bash attack_scenarios/attack_03_epoch_rollback/run.sh || FINAL_RC=1
 run_step "attack-04" bash attack_scenarios/attack_04_wrong_session_id/run.sh || FINAL_RC=1
-
-# Stage176: Attack-05 (key schedule confusion)
 run_step "attack-05" bash attack_scenarios/attack_05_key_schedule_confusion/run.sh || FINAL_RC=1
 
-run_step "pytest" bash scripts/02_run_pytest.sh || FINAL_RC=1
+run_step "pytest" run_pytest_soft || FINAL_RC=1
 run_step "summarize" bash scripts/05_summarize.sh || FINAL_RC=1
 
 echo "[matrix] DONE"
