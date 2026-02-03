@@ -1,19 +1,25 @@
 # MIT License © 2025 Motohiro Suzuki
 """
-qsp/minicore.py (Stage178-A minimal core)
+qsp/minicore.py (Stage178-A/B minimal core)
 
 This file is intentionally *test-compatible* with two call styles found in this repo:
 
 (1) Old style:
     core = MiniCore(session_id=123)
     core.accept_frame("HS", claimed_session_id=123, claimed_epoch=0) -> b"OK:HS"
-    core.accept_frame("APP_DATA", b"hello", claimed_session_id=123, claimed_epoch=0) -> b"OK:APP"
+    core.accept_frame("APP_DATA", b"hello", claimed_session_id=123, claimed_epoch=0) -> b"OK:APP_DATA:hello"
     core.advance_epoch()
 
 (2) Dict style:
     c = MiniCore()
     c.accept_frame({"type":"HANDSHAKE_DONE","session_id":777,"epoch":1,"payload":b""}) -> MiniResult(...)
     c.accept_frame({"type":"REKEY",...}) -> MiniResult(...)
+    c.accept_frame({"type":"APP_DATA",...}) -> MiniResult(...)
+
+Stage178-B addition (minimal):
+- downgrade detection via "mode" pinning:
+  handshake pins session.mode; subsequent frames must not change it.
+  If changed -> fail-closed "downgrade detected".
 """
 
 from __future__ import annotations
@@ -51,6 +57,9 @@ class MiniSession:
     closed: bool = False
     key_material: bytes = b"init"
 
+    # Stage178-B: downgrade detection (pinned at handshake)
+    mode: Optional[str] = None  # e.g., "PQC+QKD" or "PQC_ONLY"
+
     def fingerprint_hex(self) -> str:
         return hashlib.sha256(self.key_material).hexdigest()
 
@@ -74,7 +83,14 @@ class MiniCore:
         self.s.key_material = _h(self.s.key_material + b"advance" + self.s.epoch.to_bytes(8, "big", signed=True))
 
     # --- unified accept_frame supporting both call styles ---
-    def accept_frame(self, ft_or_frame: Any, payload: Any = None, *, claimed_session_id: int = None, claimed_epoch: int = None):
+    def accept_frame(
+        self,
+        ft_or_frame: Any,
+        payload: Any = None,
+        *,
+        claimed_session_id: int = None,
+        claimed_epoch: int = None,
+    ):
         # Branch by call style:
         # - dict style: accept_frame({..})
         # - old style : accept_frame("HS", ..., claimed_session_id=..., claimed_epoch=...)
@@ -83,6 +99,26 @@ class MiniCore:
         if isinstance(ft_or_frame, str):
             return self._accept_old_style(ft_or_frame, payload, claimed_session_id=claimed_session_id, claimed_epoch=claimed_epoch)
         self.s.close("Invalid frame input")
+
+    # -------------------------
+    # downgrade guard (dict)
+    # -------------------------
+    def _guard_mode_dict(self, frame: Dict[str, Any]) -> None:
+        """
+        Stage178-B: detect downgrade by pinning 'mode' at handshake.
+        - If frame contains 'mode' and it conflicts with pinned -> fail-closed.
+        - If pinned exists and frame omits 'mode', do nothing (backward compatible).
+        """
+        mode = frame.get("mode")
+        if mode is None:
+            return
+        if not isinstance(mode, str):
+            self.s.close("Invalid mode")
+        if self.s.mode is None:
+            # Only pinned at handshake
+            return
+        if mode != self.s.mode:
+            self.s.close("downgrade detected")
 
     # -------------------------
     # dict style implementation
@@ -113,14 +149,23 @@ class MiniCore:
             if self.s.expected_session_id is not None and sid != self.s.expected_session_id:
                 self.s.close("session mismatch")
 
+            # Stage178-B: pin mode at handshake if provided, else default
+            mode = frame.get("mode", "PQC+QKD")
+            if not isinstance(mode, str):
+                self.s.close("Invalid mode")
+            self.s.mode = mode
+
             self.s.session_id = sid
             self.s.epoch = epoch
             self.s.handshake_complete = True
-            self.s.key_material = _h(b"hs" + sid.to_bytes(8, "big") + epoch.to_bytes(8, "big", signed=True))
+            self.s.key_material = _h(b"hs" + sid.to_bytes(8, "big") + epoch.to_bytes(8, "big", signed=True) + mode.encode("utf-8"))
             return MiniResult(True, "handshake", self.s.epoch, self.s.session_id, self.s.fingerprint_hex())
 
         if not self.s.handshake_complete:
             self.s.close("before handshake")
+
+        # Stage178-B: downgrade guard (only after handshake)
+        self._guard_mode_dict(frame)
 
         if sid != self.s.session_id:
             self.s.close("session mismatch")
@@ -138,6 +183,27 @@ class MiniCore:
             return MiniResult(True, "app", self.s.epoch, self.s.session_id, self.s.fingerprint_hex())
 
         self.s.close("unknown frame")
+
+    # -------------------------
+    # downgrade guard (old style)
+    # -------------------------
+    def _guard_mode_old(self, payload_b: bytes) -> None:
+        """
+        Old-style has no structured field, but we allow an optional marker:
+        payload starting with b"MODE:" + utf-8 text.
+        If pinned mode exists and marker conflicts -> fail-closed.
+        This keeps old tests working (they don't use MODE:).
+        """
+        if not payload_b.startswith(b"MODE:"):
+            return
+        try:
+            mode = payload_b[5:].decode("utf-8", errors="strict")
+        except Exception:
+            self.s.close("Invalid mode")
+        if self.s.mode is None:
+            return
+        if mode != self.s.mode:
+            self.s.close("downgrade detected")
 
     # -------------------------
     # old style implementation
@@ -164,14 +230,25 @@ class MiniCore:
             if claimed_epoch < 0:
                 self.s.close("bad epoch")
 
+            # Stage178-B: pin default mode for old style handshake
+            self.s.mode = "PQC+QKD"
+
             self.s.session_id = claimed_session_id
             self.s.epoch = claimed_epoch
             self.s.handshake_complete = True
-            self.s.key_material = _h(b"hs" + claimed_session_id.to_bytes(8, "big") + claimed_epoch.to_bytes(8, "big", signed=True))
+            self.s.key_material = _h(
+                b"hs"
+                + claimed_session_id.to_bytes(8, "big")
+                + claimed_epoch.to_bytes(8, "big", signed=True)
+                + self.s.mode.encode("utf-8")
+            )
             return b"OK:HS"
 
         if not self.s.handshake_complete:
             self.s.close("before handshake")
+
+        # Stage178-B: optional downgrade guard via MODE: marker
+        self._guard_mode_old(payload_b)
 
         if claimed_session_id != self.s.session_id:
             self.s.close("session mismatch")
@@ -186,8 +263,6 @@ class MiniCore:
         if ft == "APP_DATA":
             if claimed_epoch != self.s.epoch:
                 self.s.close("epoch mismatch")
-            if not isinstance(payload_b, (bytes, bytearray)):
-                self.s.close("Invalid payload")
             return b"OK:APP_DATA:" + bytes(payload_b)
 
         self.s.close("unknown frame")
