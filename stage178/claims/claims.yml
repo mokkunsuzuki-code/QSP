@@ -1,0 +1,227 @@
+schema_version: 1
+stage: 178-A
+project: QSP
+claims:
+- id: A1
+  title: Handshake gating
+  claim: 'Application data MUST NOT be accepted before a successful handshake completes.
+
+    '
+  assumptions:
+  - Cryptographic primitives behave as specified.
+  - Peer follows the frame format (invalid frames are rejected).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A1_handshake_gating
+  implementation:
+    file: qsp/minicore.py
+    anchor: MiniCore.accept_frame(); mismatch validation + gating
+  tests:
+    positive:
+    - tests/test_handshake_success.py
+    negative:
+    - tests/test_reject_appdata_before_handshake.py
+  ci_gate: claims-A1
+  negative_evidence: Send APP_DATA before handshake -> connection/processing MUST
+    be rejected (fail-closed).
+- id: A2
+  title: Epoch monotonicity
+  claim: 'Epoch numbers MUST monotonically increase and MUST NOT roll back within
+    a session.
+
+    '
+  assumptions:
+  - Local session state is not arbitrarily corrupted (integrity of in-memory state).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A2_epoch_monotonicity
+  implementation:
+    file: qsp/session.py
+    anchor: advance_epoch(); enforce next_epoch = current_epoch + 1
+  tests:
+    positive:
+    - tests/test_epoch_increase.py
+    negative:
+    - tests/test_epoch_rollback_rejected.py
+  ci_gate: claims-A2
+  negative_evidence: Try to set epoch to (current-1) -> MUST be rejected and session
+    MUST close.
+- id: A3
+  title: Fail-closed on mismatch
+  claim: 'Any critical mismatch (session_id/epoch/transcript/auth tag) MUST trigger
+    a fail-closed behavior.
+
+    '
+  assumptions:
+  - Transport delivers bytes; attacker may tamper but cannot break AEAD without key.
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A3_fail_closed_on_mismatch
+  implementation:
+    file: qsp/minicore.py
+    anchor: MiniCore.accept_frame(); mismatch validation + gating
+  tests:
+    positive:
+    - tests/test_normal_data_flow.py
+    negative:
+    - tests/test_close_on_wrong_session_id.py
+    - tests/test_close_on_epoch_mismatch.py
+  ci_gate: claims-A3
+  negative_evidence: Wrong session_id or wrong epoch -> MUST close (no recovery path).
+- id: A4
+  title: Rekey requires safe state
+  claim: 'Rekey MUST only be performed in a valid session state (handshake complete;
+    epoch boundaries respected).
+
+    '
+  assumptions:
+  - Peer does not bypass state machine checks (checks are enforced server-side).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A4_rekey_requires_valid_state
+  implementation:
+    file: qsp/rekey_engine.py
+    anchor: should_rekey(); refuse rekey if handshake incomplete or state invalid
+  tests:
+    positive:
+    - tests/test_rekey_happy_path.py
+    negative:
+    - tests/test_rekey_rejected_before_handshake.py
+  ci_gate: claims-A4
+  negative_evidence: Attempt rekey before handshake -> MUST reject (and optionally
+    close).
+- id: A5
+  title: Key separation (handshake/app/rekey)
+  claim: 'Keys derived for different purposes (handshake, application data, rekey)
+    MUST be cryptographically separated.
+
+    '
+  assumptions:
+  - HKDF behaves as a PRF; domain separation labels are unique.
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A5_key_separation
+  implementation:
+    file: crypto/kdf.py
+    anchor: hkdf_expand(label=...); distinct labels for HS/App/Rekey
+  tests:
+    positive:
+    - tests/test_key_separation_labels.py
+    negative:
+    - tests/test_key_separation_label_collision_detected.py
+  ci_gate: claims-A5
+  negative_evidence: If labels are accidentally equal -> test MUST fail (detect collision).
+- id: A6
+  title: Transcript binding
+  claim: 'Authentication and key derivation MUST be bound to the handshake transcript.
+
+    '
+  assumptions:
+  - Transcript hashing is collision-resistant in practice (within model limits).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A6_transcript_binding
+  implementation:
+    file: qsp/transcript.py
+    anchor: transcript_hash(); include CHLO/SHLO fields in transcript
+  tests:
+    positive:
+    - tests/test_transcript_hash_stable.py
+    negative:
+    - tests/test_transcript_tamper_breaks_auth.py
+  ci_gate: claims-A6
+  negative_evidence: Tamper a handshake field -> signature/verification MUST fail.
+- id: A7
+  title: Signature verification before accept
+  claim: 'Handshake messages MUST be authenticated (signature verified) before accepting
+    the session.
+
+    '
+  assumptions:
+  - Public keys are configured/obtained securely (out of scope for this claim).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A7_sig_verify_before_accept
+  implementation:
+    file: crypto/signatures.py
+    anchor: verify_signature(); called prior to session_accept()
+  tests:
+    positive:
+    - tests/test_signature_valid_accepts.py
+    negative:
+    - tests/test_signature_tampered_rejected.py
+  ci_gate: claims-A7
+  negative_evidence: Modify signature bytes -> MUST reject handshake.
+- id: A8
+  title: QKD unavailable safe fallback
+  claim: 'If QKD is unavailable, the protocol MUST fall back to PQC-only mode without
+    weakening fail-closed semantics.
+
+    '
+  assumptions:
+  - PQC-only mode security relies on the selected PQC primitives (out of scope here).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A8_qkd_unavailable_fallback_safe
+  implementation:
+    file: keysources/qkd.py
+    anchor: try_get_qkd_for_rekey(); on failure switch mode=PQC_ONLY with audit log
+  tests:
+    positive:
+    - tests/test_qkd_unavailable_fallback_continues.py
+    negative:
+    - tests/test_qkd_unavailable_does_not_skip_checks.py
+  ci_gate: claims-A8
+  negative_evidence: In fallback, mismatches still MUST close (no relaxed checks).
+- id: A9
+  title: Rekey produces fresh keys
+  claim: 'Each successful rekey MUST produce fresh traffic keys distinct from previous
+    epochs.
+
+    '
+  assumptions:
+  - Rekey input entropy is sufficient (from transcript/kem/qkd mix as configured).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A9_rekey_freshness
+  implementation:
+    file: qsp/rekey_engine.py
+    anchor: derive_rekey_keys(); uses new epoch + new inputs to KDF
+  tests:
+    positive:
+    - tests/test_rekey_keys_change_across_epochs.py
+    negative:
+    - tests/test_rekey_reuse_detected.py
+  ci_gate: claims-A9
+  negative_evidence: Force identical inputs -> test MUST detect key reuse and fail.
+- id: A10
+  title: Provenance log consistency
+  claim: 'Key provenance (mode, reason, epoch) MUST be recorded consistently and MUST
+    match the actual state transitions.
+
+    '
+  assumptions:
+  - Audit log is append-only within a run (file write succeeds or fails loudly).
+  formal_model:
+    tool: tamarin
+    file: model/qsp_state.spthy
+    lemma: A10_provenance_consistency
+  implementation:
+    file: provenance/audit_log.py
+    anchor: emit_event(); include mode/reason/epoch for FAILOVER/REKEY
+  tests:
+    positive:
+    - tests/test_audit_log_emits_expected_fields.py
+    negative:
+    - tests/test_audit_log_missing_fields_fails.py
+  ci_gate: claims-A10
+  negative_evidence: If any required provenance field is missing -> CI MUST fail.
