@@ -132,6 +132,74 @@ The exact guarantees depend on the evidence available at each stage.
 
 ---
 
+## Independent Verification — Start Here
+
+QSP is intended to be independently examined, reproduced, and challenged.
+
+If you are approaching QSP as an external researcher, security engineer, cryptographer, reviewer, or other independent evaluator, the recommended path is:
+
+### 1. Understand the Verification Boundary
+
+Start by identifying exactly what a QSP stage claims to verify — and what it does not claim to verify.
+
+Do not interpret evidence for one cryptographic property as proof of system-wide quantum security.
+
+### 2. Reproduce the Deterministic Verification
+
+Begin with Stage380 and Stage381 to examine the deterministic verification model, offline verification package, canonicalization rules, fail-closed behavior, and reproducibility boundaries.
+
+- Stage380: https://github.com/mokkunsuzuki-code/stage380
+- Stage381: https://github.com/mokkunsuzuki-code/stage381
+
+### 3. Independently Examine the PQC Evidence
+
+Use Stage386 to inspect the ML-DSA-65 public-key identity, signature binding, target binding, and independent re-verification evidence.
+
+- Stage386: https://github.com/mokkunsuzuki-code/stage386
+
+### 4. Test Verifier Independence
+
+Use Stage387 to examine whether the PQC evidence can be verified across more than one implementation rather than relying on a single verifier implementation.
+
+- Stage387: https://github.com/mokkunsuzuki-code/stage387
+
+### 5. Review the Assessment Evidence
+
+Use Stage388 to examine the packaged verification scope, threat assumptions, known limitations, reproducibility material, and assessment-readiness evidence.
+
+- Stage388: https://github.com/mokkunsuzuki-code/stage388
+
+### 6. Conduct or Submit Independent Assessment Work
+
+Stage390 is the current public entry point for third-party replication and assessment-oriented work.
+
+- Stage390: https://github.com/mokkunsuzuki-code/stage390
+
+Stage390 should not be interpreted as evidence that an external assessment, formal certification, or system-wide quantum-safe acceptance has already been completed.
+
+### What Counts as a Useful Independent Result?
+
+Useful results include both successful and unsuccessful reproduction.
+
+Examples include:
+
+- independently reproduced verification results;
+- hash or artifact mismatches;
+- cross-platform inconsistencies;
+- verifier implementation disagreements;
+- incorrect assumptions;
+- unclear verification boundaries;
+- evidence that cannot be reproduced;
+- proposed stronger verification methods.
+
+A failed reproduction is not something QSP intends to hide.
+
+It is evidence that should be investigated.
+
+> **Do not trust QSP because QSP says it works. Verify the evidence yourself.**
+
+---
+
 ## Key Verification Stages
 
 The following repositories are representative entry points into the QSP verification work.
